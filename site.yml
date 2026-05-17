@@ -1,0 +1,611 @@
+---
+- name: Install regular applications on Linux Mint
+  hosts: local
+  become: true
+  gather_facts: false
+
+  vars_files:
+    - vars/apps.yml
+
+  pre_tasks:
+    - name: Refresh apt package cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install VMware guest tools
+      ansible.builtin.apt:
+        name: "{{ vmware_guest_packages }}"
+        state: present
+        install_recommends: "{{ apt_install_recommends }}"
+      when: vmware_guest_packages | length > 0
+
+    - name: Upgrade apt packages
+      ansible.builtin.apt:
+        upgrade: "{{ apt_upgrade_type }}"
+      when: apt_upgrade | bool
+
+    - name: Gather system facts
+      ansible.builtin.setup:
+
+    - name: Check supported OS family
+      ansible.builtin.fail:
+        msg: "This playbook supports Linux Mint or another Debian-family distribution."
+      when: ansible_facts.os_family != "Debian"
+
+    - name: Read enabled foreign architectures
+      ansible.builtin.command: dpkg --print-foreign-architectures
+      register: foreign_architectures
+      changed_when: false
+      when: enable_i386_arch | bool
+
+    - name: Enable i386 architecture
+      ansible.builtin.command: dpkg --add-architecture i386
+      when:
+        - enable_i386_arch | bool
+        - "'i386' not in foreign_architectures.stdout_lines"
+      register: add_i386_architecture
+      changed_when: add_i386_architecture.rc == 0
+
+  tasks:
+    - name: Install base apt packages
+      ansible.builtin.apt:
+        name: "{{ base_apt_packages }}"
+        state: present
+        install_recommends: "{{ apt_install_recommends }}"
+      when: base_apt_packages | length > 0
+
+    - name: Read Debian package architecture
+      ansible.builtin.command: dpkg --print-architecture
+      register: deb_architecture
+      changed_when: false
+      when: install_docker | bool or install_go | bool
+
+    - name: Set Go download architecture
+      ansible.builtin.set_fact:
+        go_download_arch: "{{ go_architecture_map[deb_architecture.stdout | trim] | default('') }}"
+      when: install_go | bool
+
+    - name: Validate Go download architecture
+      ansible.builtin.fail:
+        msg: "Go official binary downloads are not configured for dpkg architecture {{ deb_architecture.stdout | trim }}."
+      when:
+        - install_go | bool
+        - go_download_arch == ""
+
+    - name: Resolve latest Go version
+      ansible.builtin.shell:
+        cmd: curl -fsSL "https://go.dev/VERSION?m=text" | head -n 1
+        executable: /bin/bash
+      register: go_latest_version
+      changed_when: false
+      when: install_go | bool
+
+    - name: Validate latest Go version
+      ansible.builtin.fail:
+        msg: "Could not resolve the latest Go version from go.dev."
+      when:
+        - install_go | bool
+        - go_latest_version.stdout | trim == ""
+
+    - name: Read installed Go version
+      ansible.builtin.command: /usr/local/go/bin/go version
+      register: go_installed_version
+      changed_when: false
+      failed_when: false
+      when: install_go | bool
+
+    - name: Download latest official Go archive
+      ansible.builtin.get_url:
+        url: "https://go.dev/dl/{{ go_latest_version.stdout | trim }}.linux-{{ go_download_arch }}.tar.gz"
+        dest: "{{ go_download_dir }}/{{ go_latest_version.stdout | trim }}.linux-{{ go_download_arch }}.tar.gz"
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - install_go | bool
+        - (go_latest_version.stdout | trim) not in (go_installed_version.stdout | default(''))
+
+    - name: Remove previous official Go installation
+      ansible.builtin.file:
+        path: "{{ go_install_dir }}"
+        state: absent
+      when:
+        - install_go | bool
+        - (go_latest_version.stdout | trim) not in (go_installed_version.stdout | default(''))
+
+    - name: Install latest official Go archive
+      ansible.builtin.unarchive:
+        src: "{{ go_download_dir }}/{{ go_latest_version.stdout | trim }}.linux-{{ go_download_arch }}.tar.gz"
+        dest: /usr/local
+        remote_src: true
+        owner: root
+        group: root
+      when:
+        - install_go | bool
+        - (go_latest_version.stdout | trim) not in (go_installed_version.stdout | default(''))
+
+    - name: Add Go to system PATH
+      ansible.builtin.copy:
+        dest: /etc/profile.d/go.sh
+        content: |
+          export PATH=$PATH:{{ go_install_dir }}/bin
+        owner: root
+        group: root
+        mode: "0644"
+      when: install_go | bool
+
+    - name: Read Ubuntu base codename for Docker repository
+      ansible.builtin.shell:
+        cmd: '. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}"'
+        executable: /bin/bash
+      register: docker_ubuntu_codename
+      changed_when: false
+      when: install_docker | bool
+
+    - name: Validate Docker repository codename
+      ansible.builtin.fail:
+        msg: "Could not determine the Ubuntu base codename for the Docker APT repository."
+      when:
+        - install_docker | bool
+        - docker_ubuntu_codename.stdout | trim == ""
+
+    - name: Ensure apt keyring directory exists for Docker
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: install_docker | bool
+
+    - name: Download Docker apt repository key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        owner: root
+        group: root
+        mode: "0644"
+      when: install_docker | bool
+
+    - name: Add Docker apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch={{ deb_architecture.stdout | trim }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ docker_ubuntu_codename.stdout | trim }} stable"
+        filename: docker
+        state: present
+        update_cache: true
+      when: install_docker | bool
+
+    - name: Install Docker packages
+      ansible.builtin.apt:
+        name: "{{ docker_packages }}"
+        state: present
+        install_recommends: "{{ apt_install_recommends }}"
+      when:
+        - install_docker | bool
+        - docker_packages | length > 0
+
+    - name: Ensure Docker service is enabled and running
+      ansible.builtin.service:
+        name: docker
+        enabled: true
+        state: started
+      when: install_docker | bool
+
+    - name: Ensure docker group exists
+      ansible.builtin.group:
+        name: docker
+        state: present
+      when: install_docker | bool
+
+    - name: Add users to docker group
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: docker
+        append: true
+      loop: "{{ docker_users }}"
+      when:
+        - install_docker | bool
+        - docker_users | length > 0
+
+    - name: Read nvm user account
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ nvm_user }}"
+      when: install_nvm | bool
+
+    - name: Set nvm user paths
+      ansible.builtin.set_fact:
+        nvm_user_home: "{{ getent_passwd[nvm_user][4] }}"
+        nvm_install_dir: "{{ nvm_dir | default(getent_passwd[nvm_user][4] + '/.nvm') }}"
+        nvm_shell_profile: "{{ nvm_profile | default(getent_passwd[nvm_user][4] + '/.bashrc') }}"
+      when: install_nvm | bool
+
+    - name: Resolve latest nvm release tag from GitHub
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail &&
+          curl -fsSL https://api.github.com/repos/nvm-sh/nvm/releases/latest |
+          sed -n 's/.*"tag_name": "\([^"]*\)".*/\1/p' |
+          head -n 1
+        executable: /bin/bash
+      register: nvm_latest_release
+      changed_when: false
+      when: install_nvm | bool
+
+    - name: Validate latest nvm release tag
+      ansible.builtin.fail:
+        msg: "Could not resolve the latest nvm release from GitHub."
+      when:
+        - install_nvm | bool
+        - nvm_latest_release.stdout | trim == ""
+
+    - name: Check whether nvm is installed
+      ansible.builtin.stat:
+        path: "{{ nvm_install_dir }}/nvm.sh"
+      register: nvm_script
+      when: install_nvm | bool
+
+    - name: Read installed nvm version
+      ansible.builtin.shell:
+        cmd: >-
+          export NVM_DIR="{{ nvm_install_dir }}" &&
+          . "$NVM_DIR/nvm.sh" &&
+          nvm --version
+        executable: /bin/bash
+      become_user: "{{ nvm_user }}"
+      register: nvm_installed_version
+      changed_when: false
+      when:
+        - install_nvm | bool
+        - nvm_script.stat.exists
+
+    - name: Install or update nvm from latest GitHub release
+      ansible.builtin.shell:
+        cmd: >-
+          export NVM_DIR="{{ nvm_install_dir }}" &&
+          export PROFILE="{{ nvm_shell_profile }}" &&
+          curl -fsSL
+          "https://raw.githubusercontent.com/nvm-sh/nvm/{{ nvm_latest_release.stdout | trim }}/install.sh" |
+          bash
+        executable: /bin/bash
+      become_user: "{{ nvm_user }}"
+      register: nvm_install_result
+      changed_when: true
+      when:
+        - install_nvm | bool
+        - not nvm_script.stat.exists or
+          nvm_installed_version.stdout | default('') | trim != (nvm_latest_release.stdout | trim | regex_replace('^v', ''))
+
+    - name: Resolve latest Node.js version with nvm
+      ansible.builtin.shell:
+        cmd: >-
+          export NVM_DIR="{{ nvm_install_dir }}" &&
+          . "$NVM_DIR/nvm.sh" &&
+          nvm version-remote node
+        executable: /bin/bash
+      become_user: "{{ nvm_user }}"
+      register: nvm_latest_node_version
+      changed_when: false
+      when:
+        - install_nvm | bool
+        - install_latest_node | bool
+
+    - name: Check installed latest Node.js version
+      ansible.builtin.shell:
+        cmd: >-
+          export NVM_DIR="{{ nvm_install_dir }}" &&
+          . "$NVM_DIR/nvm.sh" &&
+          nvm version "{{ nvm_latest_node_version.stdout | trim }}"
+        executable: /bin/bash
+      become_user: "{{ nvm_user }}"
+      register: nvm_installed_latest_node_version
+      changed_when: false
+      failed_when: false
+      when:
+        - install_nvm | bool
+        - install_latest_node | bool
+        - nvm_latest_node_version.stdout | trim != ""
+
+    - name: Install latest Node.js with nvm
+      ansible.builtin.shell:
+        cmd: >-
+          export NVM_DIR="{{ nvm_install_dir }}" &&
+          . "$NVM_DIR/nvm.sh" &&
+          nvm install node
+        executable: /bin/bash
+      become_user: "{{ nvm_user }}"
+      register: nvm_install_node_result
+      changed_when: true
+      when:
+        - install_nvm | bool
+        - install_latest_node | bool
+        - nvm_latest_node_version.stdout | trim != ""
+        - (nvm_installed_latest_node_version.stdout | default('N/A') | trim) != (nvm_latest_node_version.stdout | trim)
+
+    - name: Read nvm default Node.js alias
+      ansible.builtin.shell:
+        cmd: >-
+          export NVM_DIR="{{ nvm_install_dir }}" &&
+          . "$NVM_DIR/nvm.sh" &&
+          nvm alias default
+        executable: /bin/bash
+      become_user: "{{ nvm_user }}"
+      register: nvm_default_node_alias
+      changed_when: false
+      failed_when: false
+      when:
+        - install_nvm | bool
+        - install_latest_node | bool
+        - nvm_set_latest_node_default | bool
+
+    - name: Set default Node.js version for nvm
+      ansible.builtin.shell:
+        cmd: >-
+          export NVM_DIR="{{ nvm_install_dir }}" &&
+          . "$NVM_DIR/nvm.sh" &&
+          nvm alias default node
+        executable: /bin/bash
+      become_user: "{{ nvm_user }}"
+      register: nvm_default_node_result
+      changed_when: true
+      when:
+        - install_nvm | bool
+        - install_latest_node | bool
+        - nvm_set_latest_node_default | bool
+        - "'default -> node' not in nvm_default_node_alias.stdout | default('')"
+
+    - name: Install or update global npm packages
+      ansible.builtin.shell:
+        cmd: >-
+          export NVM_DIR="{{ nvm_install_dir }}" &&
+          . "$NVM_DIR/nvm.sh" &&
+          nvm use node >/dev/null &&
+          npm install -g {{ item | quote }}
+        executable: /bin/bash
+      become_user: "{{ nvm_user }}"
+      register: npm_global_package_install
+      changed_when: "'up to date' not in npm_global_package_install.stdout"
+      loop: "{{ npm_global_packages }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - install_nvm | bool
+        - npm_global_packages | length > 0
+
+    - name: Install or update latest Zed editor
+      ansible.builtin.shell:
+        cmd: "curl -fsSL https://zed.dev/install.sh | {% if zed_channel | default('stable') == 'preview' %}ZED_CHANNEL=preview {% endif %}sh"
+        executable: /bin/bash
+      become_user: "{{ zed_user }}"
+      register: zed_install_result
+      changed_when: true
+      when: install_zed | bool
+
+    - name: Read Zed user account
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ zed_user }}"
+      when: install_zed | bool
+
+    - name: Set Zed user configuration path
+      ansible.builtin.set_fact:
+        zed_config_dir: "{{ getent_passwd[zed_user][4] }}/.config/zed"
+      when: install_zed | bool
+
+    - name: Ensure Zed configuration directory exists
+      ansible.builtin.file:
+        path: "{{ zed_config_dir }}"
+        state: directory
+        mode: "0755"
+      become_user: "{{ zed_user }}"
+      when: install_zed | bool
+
+    - name: Configure Zed preferences
+      ansible.builtin.copy:
+        dest: "{{ zed_config_dir }}/settings.json"
+        content: "{{ zed_settings | to_nice_json }}\n"
+        mode: "0644"
+      become_user: "{{ zed_user }}"
+      when: install_zed | bool
+
+    - name: Install or update uv
+      ansible.builtin.shell:
+        cmd: curl -LsSf https://astral.sh/uv/install.sh | sh
+        executable: /bin/bash
+      become_user: "{{ uv_user }}"
+      register: uv_install_result
+      changed_when: true
+      when: install_uv | bool
+
+    - name: Ensure apt keyring directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: third_party_apt_repositories | selectattr('enabled') | list | length > 0
+
+    - name: Download third-party apt repository keys
+      ansible.builtin.get_url:
+        url: "{{ item.key_url }}"
+        dest: "{{ item.keyring_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ third_party_apt_repositories | selectattr('enabled') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Add third-party apt repositories
+      ansible.builtin.apt_repository:
+        repo: "{{ item.repo }}"
+        filename: "{{ item.filename | default(item.name) }}"
+        state: present
+        update_cache: false
+      loop: "{{ third_party_apt_repositories | selectattr('enabled') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Refresh apt cache after repository changes
+      ansible.builtin.apt:
+        update_cache: true
+      when: third_party_apt_repositories | selectattr('enabled') | list | length > 0
+
+    - name: Install regular apt applications
+      ansible.builtin.apt:
+        name: "{{ apt_packages }}"
+        state: present
+        install_recommends: "{{ apt_install_recommends }}"
+      when: apt_packages | length > 0
+
+    - name: Install third-party apt applications
+      ansible.builtin.apt:
+        name: "{{ third_party_apt_repositories | selectattr('enabled') | map(attribute='packages') | flatten }}"
+        state: present
+        install_recommends: "{{ apt_install_recommends }}"
+      when: third_party_apt_repositories | selectattr('enabled') | map(attribute='packages') | flatten | length > 0
+
+    - name: Read Cinnamon panel user account
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ cinnamon_panel_user }}"
+      when: pin_cinnamon_panel_apps | bool
+
+    - name: Set Cinnamon panel user home
+      ansible.builtin.set_fact:
+        cinnamon_panel_user_home: "{{ getent_passwd[cinnamon_panel_user][4] }}"
+      when: pin_cinnamon_panel_apps | bool
+
+    - name: Pin applications to Cinnamon panel
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+
+          runner=()
+          if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
+            runner=(dbus-run-session --)
+          fi
+
+          "${runner[@]}" python3 <<'PY'
+          import ast
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          home = pathlib.Path(os.environ["CINNAMON_PANEL_USER_HOME"])
+          pinned_apps = json.loads(os.environ["CINNAMON_PANEL_PINNED_APPS"])
+          config_dir = home / ".config/cinnamon/spices/grouped-window-list@cinnamon.org"
+          schema_path = pathlib.Path("/usr/share/cinnamon/applets/grouped-window-list@cinnamon.org/settings-schema.json")
+
+          try:
+              enabled_applets_raw = subprocess.check_output(
+                  ["gsettings", "get", "org.cinnamon", "enabled-applets"],
+                  stderr=subprocess.DEVNULL,
+                  text=True,
+              ).strip()
+              enabled_applets = ast.literal_eval(enabled_applets_raw)
+          except Exception:
+              print("skipped: Cinnamon settings are unavailable")
+              sys.exit(0)
+
+          instance_ids = []
+          for applet in enabled_applets:
+              parts = applet.split(":")
+              if len(parts) >= 5 and parts[3] == "grouped-window-list@cinnamon.org":
+                  instance_ids.append(parts[4])
+
+          if not instance_ids:
+              print("skipped: grouped-window-list applet is not enabled")
+              sys.exit(0)
+
+          config_dir.mkdir(parents=True, exist_ok=True)
+          changed = False
+
+          for instance_id in instance_ids:
+              config_path = config_dir / f"{instance_id}.json"
+
+              if config_path.exists():
+                  data = json.loads(config_path.read_text())
+              elif schema_path.exists():
+                  data = json.loads(schema_path.read_text())
+              else:
+                  data = {}
+
+              pinned_config = data.setdefault("pinned-apps", {})
+              if not isinstance(pinned_config, dict):
+                  pinned_config = {}
+                  data["pinned-apps"] = pinned_config
+
+              current_value = pinned_config.get("value")
+              if not isinstance(current_value, list):
+                  current_value = pinned_config.get("default", [])
+              if not isinstance(current_value, list):
+                  current_value = []
+
+              next_value = list(current_value)
+              for app in pinned_apps:
+                  if app not in next_value:
+                      next_value.append(app)
+
+              if next_value != current_value or pinned_config.get("value") != next_value or not config_path.exists():
+                  pinned_config["value"] = next_value
+                  temp_path = config_path.with_suffix(config_path.suffix + ".tmp")
+                  temp_path.write_text(json.dumps(data, indent=4) + "\n")
+                  temp_path.replace(config_path)
+                  changed = True
+
+          print("changed" if changed else "ok")
+          PY
+        executable: /bin/bash
+      become_user: "{{ cinnamon_panel_user }}"
+      environment:
+        CINNAMON_PANEL_USER_HOME: "{{ cinnamon_panel_user_home }}"
+        CINNAMON_PANEL_PINNED_APPS: "{{ cinnamon_panel_pinned_apps | to_json }}"
+      register: cinnamon_panel_pin_result
+      changed_when: "'changed' in cinnamon_panel_pin_result.stdout_lines"
+      when: pin_cinnamon_panel_apps | bool
+
+    - name: Ensure deb download directory exists
+      ansible.builtin.file:
+        path: "{{ deb_download_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: deb_packages | length > 0
+
+    - name: Download deb packages
+      ansible.builtin.get_url:
+        url: "{{ item.url }}"
+        dest: "{{ deb_download_dir }}/{{ item.name }}.deb"
+        checksum: "{{ item.checksum | default(omit) }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ deb_packages }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Install deb packages
+      ansible.builtin.apt:
+        deb: "{{ deb_download_dir }}/{{ item.name }}.deb"
+        state: present
+      loop: "{{ deb_packages }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Remove apt packages
+      ansible.builtin.apt:
+        name: "{{ apt_packages_absent }}"
+        state: absent
+        purge: "{{ purge_absent_packages }}"
+      when: apt_packages_absent | length > 0
+
+    - name: Remove unused apt dependencies
+      ansible.builtin.apt:
+        autoremove: true
+      when: apt_autoremove | bool

@@ -1,0 +1,104 @@
+---
+# Edit this file to match the applications you want on a fresh Linux Mint install.
+
+apt_install_recommends: true
+apt_upgrade: true
+apt_upgrade_type: safe
+apt_autoremove: true
+purge_absent_packages: false
+
+vmware_guest_packages:
+  - open-vm-tools
+  - open-vm-tools-desktop
+
+# Enable this if you install Steam, Wine, or other software that needs 32-bit libraries.
+enable_i386_arch: false
+
+# Installs or updates nvm for the user running ansible-playbook. The playbook
+# resolves the latest GitHub release at run time and runs the upstream curl
+# installer from https://github.com/nvm-sh/nvm.
+install_nvm: true
+nvm_user: "{{ lookup('env', 'SUDO_USER') | default(lookup('env', 'USER'), true) }}"
+install_latest_node: true
+nvm_set_latest_node_default: true
+npm_global_packages:
+  - "@openai/codex"
+  - "@anthropic-ai/claude-code"
+# Optional overrides:
+# nvm_dir: "/home/{{ nvm_user }}/.nvm"
+# nvm_profile: "/home/{{ nvm_user }}/.bashrc"
+
+# Installs or updates the latest Zed editor using the official Linux installer:
+# https://zed.dev/docs/installation
+install_zed: true
+zed_user: "{{ nvm_user }}"
+zed_channel: stable
+zed_settings:
+  theme:
+    mode: dark
+    dark: One Dark
+    light: One Light
+  base_keymap: VSCode
+
+pin_cinnamon_panel_apps: true
+cinnamon_panel_user: "{{ nvm_user }}"
+cinnamon_panel_pinned_apps:
+  - dev.zed.Zed.desktop
+  - google-chrome.desktop
+
+install_uv: true
+uv_user: "{{ nvm_user }}"
+
+base_apt_packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - git
+  - gnupg
+  - software-properties-common
+
+apt_packages:
+  # Requested desktop applications
+  - gedit
+  - tmux
+
+install_go: true
+go_install_dir: /usr/local/go
+go_download_dir: /tmp
+go_architecture_map:
+  amd64: amd64
+  arm64: arm64
+  armhf: armv6l
+  i386: 386
+
+install_docker: true
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+docker_users:
+  - "{{ nvm_user }}"
+
+# Third-party apt repositories are useful for apps that should receive updates
+# from their vendor.
+third_party_apt_repositories:
+  - name: google-chrome
+    enabled: true
+    key_url: https://dl.google.com/linux/linux_signing_key.pub
+    keyring_path: /etc/apt/keyrings/google-linux.asc
+    repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-linux.asc] https://dl.google.com/linux/chrome/deb/ stable main"
+    packages:
+      - google-chrome-stable
+
+# Direct .deb installs. Prefer third-party apt repositories when available,
+# because vendor repositories keep apps updated through apt.
+deb_download_dir: /var/tmp/ansible-debs
+deb_packages: []
+# deb_packages:
+#   - name: discord
+#     url: "https://discord.com/api/download?platform=linux&format=deb"
+
+# Packages to remove from a fresh install, if any.
+apt_packages_absent: []
