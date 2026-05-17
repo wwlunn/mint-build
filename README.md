@@ -14,7 +14,7 @@ sudo apt install ansible
 Edit the application list in `vars/apps.yml`, then run:
 
 ```bash
-ansible-playbook site.yml --ask-become-pass
+ansible-playbook -i inventory.ini site.yml --ask-become-pass
 ```
 
 ## App sources
