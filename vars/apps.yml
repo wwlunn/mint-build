@@ -49,6 +49,12 @@ cinnamon_panel_pinned_apps:
 install_uv: true
 uv_user: "{{ nvm_user }}"
 
+# Installs or updates herdr, a terminal multiplexer for coding agents, using the
+# official installer from https://herdr.dev/install.sh. It installs the binary to
+# the user's ~/.local/bin and does not require root.
+install_herdr: true
+herdr_user: "{{ nvm_user }}"
+
 base_apt_packages:
   - apt-transport-https
   - ca-certificates

@@ -33,6 +33,7 @@ ansible-playbook -i inventory.ini site.yml --ask-become-pass
 - `zed_settings` writes Zed preferences to `~/.config/zed/settings.json` for `zed_user`. The default uses a dark theme and VS Code keymap.
 - `pin_cinnamon_panel_apps` appends entries from `cinnamon_panel_pinned_apps` to the Cinnamon Grouped Window List panel pins for `cinnamon_panel_user`. The default pins Zed and Google Chrome.
 - `install_uv` installs or updates Astral uv for Python package and project management.
+- `install_herdr` installs or updates [herdr](https://herdr.dev/), a terminal multiplexer for coding agents, using the official installer from `https://herdr.dev/install.sh`. It installs the binary to `herdr_user`'s `~/.local/bin` and does not require root. If `~/.local/bin` is not already on `PATH`, log out and back in (Linux Mint's `~/.profile` adds it at login) or add it manually.
 
 For Steam, Wine, or other software that needs 32-bit libraries, set `enable_i386_arch: true` in `vars/apps.yml`.
 

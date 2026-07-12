@@ -418,6 +418,15 @@
       changed_when: true
       when: install_uv | bool
 
+    - name: Install or update herdr
+      ansible.builtin.shell:
+        cmd: curl -fsSL https://herdr.dev/install.sh | sh
+        executable: /bin/bash
+      become_user: "{{ herdr_user }}"
+      register: herdr_install_result
+      changed_when: true
+      when: install_herdr | bool
+
     - name: Ensure apt keyring directory exists
       ansible.builtin.file:
         path: /etc/apt/keyrings
